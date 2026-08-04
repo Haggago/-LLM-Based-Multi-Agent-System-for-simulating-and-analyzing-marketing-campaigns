@@ -1,0 +1,77 @@
+# ==============================================================================
+# LLM-Based Multi-Agent System for Business Segmentation & Marketing Intelligence
+# ==============================================================================
+
+paths:
+  raw_data: "data/raw/businesses.csv"        # your 2.68M-row export goes here
+  processed_dir: "data/processed"
+  reports_dir: "reports"
+  cache_dir: "data/processed/.cache"          # LLM response cache (avoids re-billing)
+
+# ------------------------------------------------------------------------------
+# Cleaning / entity resolution
+# ------------------------------------------------------------------------------
+cleaning:
+  drop_permanently_closed: false   # keep them but flag -- useful for churn analysis
+  min_name_length: 2
+  default_country_code: "DE"       # used for phone parsing when ambiguous
+
+dedup:
+  # Primary dedup uses place_id / cid (Google's own unique identifiers).
+  # Fuzzy fallback only runs on rows missing both.
+  fuzzy_match_threshold: 92        # rapidfuzz token_sort_ratio, 0-100
+  block_by: "zip_code"             # only compare candidates sharing this field
+
+# ------------------------------------------------------------------------------
+# Feature engineering
+# ------------------------------------------------------------------------------
+enrichment:
+  price_buckets: ["unknown", "$", "$$", "$$$", "$$$$"]
+
+# ------------------------------------------------------------------------------
+# Clustering (classical ML -- runs on ALL rows, no LLM cost)
+# ------------------------------------------------------------------------------
+clustering:
+  embedding_model: "all-MiniLM-L6-v2"   # local sentence-transformers model
+  text_fields: ["category", "description"]
+  numeric_features:
+    - "digital_presence_score"
+    - "completeness_score"
+    - "score"
+    - "ratings"
+    - "images_count"
+  algorithm: "minibatch_kmeans"         # scales to millions of rows
+  n_clusters: 12                        # override via CLI: --n-clusters
+  random_state: 42
+
+# ------------------------------------------------------------------------------
+# LLM agents
+# ------------------------------------------------------------------------------
+llm:
+  provider: "anthropic"
+  # Cheap, high-volume model for the taxonomy/canonicalization agent
+  # (runs on UNIQUE category/description strings only, not per-row)
+  bulk_model: "claude-haiku-4-5-20251001"
+  # Higher-quality model for low-volume reasoning: cluster naming + marketing copy
+  reasoning_model: "claude-sonnet-5"
+  use_batch_api: true          # ~50% cheaper, async, ideal for the bulk agent
+  max_output_tokens: 1024
+  temperature: 0.2
+  max_retries: 5
+  # Safety valve: hard cap on distinct LLM calls in the bulk agent per run
+  # (protects against a config bug silently exploding cost)
+  max_bulk_llm_calls: 20000
+
+taxonomy:
+  # Controlled vocabulary the cleaning agent canonicalizes messy CATEGORY
+  # strings into. Edit this for your vertical.
+  categories:
+    - "Outpatient Rehab / Treatment Center"
+    - "Inpatient / Residential Treatment"
+    - "Detox Center"
+    - "Methadone / Opioid Treatment Clinic"
+    - "Counseling & Therapy Services"
+    - "Sober Living / Halfway House"
+    - "Support Group / Community Org (e.g. AA/NA-affiliated)"
+    - "General Healthcare / Hospital (non-specialized)"
+    - "Other / Unclear"
